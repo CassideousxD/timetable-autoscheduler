@@ -17,6 +17,10 @@ import FacultyWorkloadSummary from './pages/FacultyWorkloadSummary';
 import FacultyCourseAssignments from './pages/FacultyCourseAssignments';
 import AboutUs from './pages/AboutUs';
 import TimetableCoordinatorDashboard from './pages/TimetableCoordinatorDashboard';
+import GuideMe from './pages/GuideMe';
+import AdminGuideMe from './pages/AdminGuideMe';
+import HODGuideMe from './pages/HODGuideMe';
+import FacultyGuideMe from './pages/FacultyGuideMe';
 import './App.css';
 
 const App = () => {
@@ -107,6 +111,10 @@ const App = () => {
           <Route path="/faculty/workload-summary/:facultyId" element={<FacultyWorkloadSummary />} />
           <Route path="/faculty-course-assignments" element={<FacultyCourseAssignments />} />
           <Route path="/about" element={<AboutUs />} />
+          <Route path="/guide-me" element={<GuideMe />} />
+          <Route path="/admin-guide-me" element={<AdminGuideMe />} />
+          <Route path="/hod-guide-me" element={<HODGuideMe />} />
+          <Route path="/faculty-guide-me" element={<FacultyGuideMe />} />
 
           {/* Redirect root to login */}
           <Route path="/" element={<Navigate to="/login" replace />} />

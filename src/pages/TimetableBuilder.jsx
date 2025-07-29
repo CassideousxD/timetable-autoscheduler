@@ -8,6 +8,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import axios from 'axios';
 import { facultyService } from '../services/facultyService';
+import { Link } from 'react-router-dom';
 
 /**
  * TimetableBuilder Component
@@ -78,7 +79,7 @@ const TimetableBuilder = () => {
   const [collisionData, setCollisionData] = useState(null);
   const [showClassTypeModal, setShowClassTypeModal] = useState(false);
   const [pendingCourseSelection, setPendingCourseSelection] = useState(null);
-  const [selectedLabFloor, setSelectedLabFloor] = useState('Ground');
+  const [selectedLabFloor, setSelectedLabFloor] = useState('First');
   const [labSchedule, setLabSchedule] = useState({});
   const [allSemesterLabSchedule, setAllSemesterLabSchedule] = useState({});
   const [showBatchSelectionModal, setShowBatchSelectionModal] = useState(false);
@@ -100,6 +101,137 @@ const TimetableBuilder = () => {
 
   const getAllSemesterLabScheduleForFloor = (floor) => {
     return allSemesterLabSchedule[floor] || {};
+  };
+
+  // New function to get all lab sessions from all student types for a specific floor
+  const getAllLabSessionsForFloor = (floor) => {
+    const allLabSessions = {};
+
+    // Initialize the structure
+    DAYS.forEach(day => {
+      allLabSessions[day] = {};
+      TIME_SLOTS.forEach(slot => {
+        allLabSessions[day][slot] = null;
+      });
+    });
+
+    // First, get lab sessions from the actual lab schedule (which contains the real floor assignments)
+    if (allSemesterLabSchedule[floor]) {
+      DAYS.forEach(day => {
+        if (allSemesterLabSchedule[floor][day]) {
+          TIME_SLOTS.forEach(slot => {
+            if (allSemesterLabSchedule[floor][day][slot]) {
+              const labAssignment = allSemesterLabSchedule[floor][day][slot];
+              allLabSessions[day][slot] = {
+                ...labAssignment,
+                studentType: labAssignment.batch.includes('PG') ? 'PG' : 'UG'
+              };
+            }
+          });
+        }
+      });
+    }
+
+    // Also check current semester lab schedule
+    if (labSchedule[floor]) {
+      DAYS.forEach(day => {
+        if (labSchedule[floor][day]) {
+          TIME_SLOTS.forEach(slot => {
+            if (labSchedule[floor][day][slot]) {
+              const labAssignment = labSchedule[floor][day][slot];
+              // Only override if this is from current semester and no assignment exists yet
+              if (!allLabSessions[day][slot] || labAssignment.semester === selectedSemester) {
+                allLabSessions[day][slot] = {
+                  ...labAssignment,
+                  studentType: labAssignment.batch.includes('PG') ? 'PG' : 'UG'
+                };
+              }
+            }
+          });
+        }
+      });
+    }
+
+    // Fallback: Scan main timetable for lab sessions that should be on this floor
+    // This ensures we catch lab sessions that might not be in the lab schedule yet
+    Object.keys(timetables).forEach(semester => {
+      const semesterTimetable = timetables[semester];
+      if (!semesterTimetable) return;
+
+      DAYS.forEach(day => {
+        if (!semesterTimetable[day]) return;
+
+        TIME_SLOTS.forEach(slot => {
+          if (!semesterTimetable[day][slot]) return;
+
+          // Check all batches for lab courses
+          Object.keys(semesterTimetable[day][slot]).forEach(batch => {
+            const course = semesterTimetable[day][slot][batch];
+            if (!course) return;
+
+            // Check if this is a lab session
+            const isLabSession = course && (
+              course.isLab === true ||
+              course.category === 'Lab' ||
+              (course.category === 'Lab Integrated Theory' && course.isLab === true) ||
+              (course.type === 'lab') ||
+              (course.sessionType === 'lab')
+            );
+
+            if (isLabSession) {
+              const isPGBatch = batch.includes('PG');
+              const batchFloor = getLabFloorForBatch(batch);
+
+              // Only show lab sessions that belong to the selected floor
+              if (batchFloor === floor) {
+                // For PG batches, be more flexible but still prevent wrong floor assignments
+                if (isPGBatch) {
+                  // If this is First Floor (PG's assigned floor), show PG labs
+                  if (floor === 'First') {
+                    if (!allLabSessions[day][slot]) {
+                      allLabSessions[day][slot] = {
+                        batch,
+                        semester,
+                        course,
+                        floor,
+                        studentType: 'PG'
+                      };
+                    }
+                  } else {
+                    // For other floors, only show PG labs if they're explicitly assigned there
+                    const labScheduleAssignment = allSemesterLabSchedule[floor]?.[day]?.[slot] || labSchedule[floor]?.[day]?.[slot];
+                    if (labScheduleAssignment && labScheduleAssignment.batch === batch) {
+                      if (!allLabSessions[day][slot]) {
+                        allLabSessions[day][slot] = {
+                          batch,
+                          semester,
+                          course,
+                          floor,
+                          studentType: 'PG'
+                        };
+                      }
+                    }
+                  }
+                } else {
+                  // For UG batches, use the fallback logic
+                  if (!allLabSessions[day][slot]) {
+                    allLabSessions[day][slot] = {
+                      batch,
+                      semester,
+                      course,
+                      floor,
+                      studentType: 'UG'
+                    };
+                  }
+                }
+              }
+            }
+          });
+        });
+      });
+    });
+
+    return allLabSessions;
   };
 
   const clearAllLabSchedules = () => {
@@ -148,6 +280,19 @@ const TimetableBuilder = () => {
   // Lab scheduling helper functions
   const getLabFloorForBatch = (batch) => {
     return BATCH_FLOOR_PREFERENCE[batch] || 'Ground';
+  };
+
+  // Function to get the appropriate lab floor based on current batch and student type
+  const getDefaultLabFloorForCurrentBatch = () => {
+    if (studentType === 'PG') {
+      return 'First'; // PG always defaults to First Floor
+    } else {
+      // For UG, use the batch's preferred floor
+      if (editingBatch) {
+        return getLabFloorForBatch(editingBatch);
+      }
+      return 'Ground'; // Default fallback
+    }
   };
 
   const checkLabCollision = (day, slot, batch, semester) => {
@@ -304,6 +449,8 @@ const TimetableBuilder = () => {
               course.category === 'Lab' ||
               (course.category === 'Lab Integrated Theory' && course.isLab);
 
+            console.log(`[SCHEDULE-LABS] Checking course: ${course.code} - isLab: ${course.isLab}, category: ${course.category}, isLabPeriod: ${isLabPeriod}`);
+
             if (isLabPeriod) {
               const floor = getLabFloorForBatch(batch);
 
@@ -331,6 +478,7 @@ const TimetableBuilder = () => {
                       if (!newAllSemesterLabSchedule[floor]) newAllSemesterLabSchedule[floor] = {};
                       if (!newAllSemesterLabSchedule[floor][altDay]) newAllSemesterLabSchedule[floor][altDay] = {};
                       newAllSemesterLabSchedule[floor][altDay][altSlot] = labAssignment;
+                      console.log(`[SCHEDULE-LABS] Assigned lab to ${floor} Floor: ${course.code} (${course.name}) - ${altDay} ${altSlot} - ${batch}`);
                       scheduledLabs.push({
                         course: course.code,
                         batch,
@@ -391,6 +539,9 @@ const TimetableBuilder = () => {
 
     setLabSchedule(newLabSchedule);
     setAllSemesterLabSchedule(newAllSemesterLabSchedule);
+
+    console.log(`[SCHEDULE-LABS] Final state - Scheduled: ${scheduledLabs.length}, Unscheduled: ${unscheduledLabs.length}`);
+    console.log(`[SCHEDULE-LABS] Lab schedule state updated for semester ${selectedSemester}`);
 
     if (unscheduledLabs.length > 0) {
       console.warn('Unscheduled labs due to collisions:', unscheduledLabs);
@@ -537,6 +688,25 @@ const TimetableBuilder = () => {
     }
   }, [studentType, selectedSemester]);
 
+  // Set default lab floor when student type changes
+  useEffect(() => {
+    if (studentType) {
+      if (studentType === 'PG') {
+        setSelectedLabFloor('First');
+      } else {
+        setSelectedLabFloor('Ground');
+      }
+    }
+  }, [studentType]);
+
+  // Update lab floor when editing batch changes
+  useEffect(() => {
+    if (editingBatch && studentType) {
+      const defaultFloor = getDefaultLabFloorForCurrentBatch();
+      setSelectedLabFloor(defaultFloor);
+    }
+  }, [editingBatch, studentType]);
+
   useEffect(() => {
     if (!editingBatch && getBatches().length > 0) {
       setEditingBatch(getBatches()[0]);
@@ -604,6 +774,13 @@ const TimetableBuilder = () => {
     setStudentType(type);
     setSelectedSemester('');
     setShowTypeSelection(false);
+
+    // Set default lab floor based on student type
+    if (type === 'PG') {
+      setSelectedLabFloor('First');
+    } else {
+      setSelectedLabFloor('Ground');
+    }
   };
 
   const getBatches = () => {
@@ -664,13 +841,35 @@ const TimetableBuilder = () => {
     let faculty = 'Unassigned';
     let role = 'Theory Teacher';
 
-    for (const requiredRole of requiredRoles) {
-      const result = findFacultyForCourse(course, batch, selectedSemester, requiredRole);
-      if (result.faculty !== 'Unassigned') {
-        faculty = result.faculty;
-        role = requiredRole;
-        console.log(`Assigned faculty: ${faculty} for role: ${role} (${result.matchType})`);
-        break;
+    // For PG courses, handle theory and lab faculty separately
+    if (studentType === 'PG') {
+      if (course.isLab) {
+        // For lab sessions, look for Lab Incharge
+        const labResult = findFacultyForCourse(course, batch, selectedSemester, 'Lab Incharge');
+        if (labResult.faculty !== 'Unassigned') {
+          faculty = labResult.faculty;
+          role = 'Lab Incharge';
+          console.log(`PG Lab constraint check: ${faculty} for role: ${role} (${labResult.matchType})`);
+        }
+      } else {
+        // For theory sessions, look for Theory Teacher
+        const theoryResult = findFacultyForCourse(course, batch, selectedSemester, 'Theory Teacher');
+        if (theoryResult.faculty !== 'Unassigned') {
+          faculty = theoryResult.faculty;
+          role = 'Theory Teacher';
+          console.log(`PG Theory constraint check: ${faculty} for role: ${role} (${theoryResult.matchType})`);
+        }
+      }
+    } else {
+      // For UG courses, use the existing logic
+      for (const requiredRole of requiredRoles) {
+        const result = findFacultyForCourse(course, batch, selectedSemester, requiredRole);
+        if (result.faculty !== 'Unassigned') {
+          faculty = result.faculty;
+          role = requiredRole;
+          console.log(`Assigned faculty: ${faculty} for role: ${role} (${result.matchType})`);
+          break;
+        }
       }
     }
 
@@ -827,52 +1026,111 @@ const TimetableBuilder = () => {
       requiredRoles = ['Theory Teacher'];
     }
 
-    // Find faculty for the first available role
-    let assignedFaculty = 'Unassigned';
-    let assignedRole = requiredRoles[0];
+    // For PG courses, handle theory and lab faculty separately
+    if (studentType === 'PG') {
+      let assignedFaculty = 'Unassigned';
+      let assignedRole = 'Theory Teacher';
 
-    for (const role of requiredRoles) {
-      const result = findFacultyForCourse(course, batch, selectedSemester, role);
-      if (result.faculty !== 'Unassigned') {
-        assignedFaculty = result.faculty;
-        assignedRole = role;
-        console.log(`Manual assignment: ${assignedFaculty} for role: ${assignedRole} (${result.matchType})`);
-        break;
-      }
-    }
-
-    // Create course object with assigned faculty
-    const courseWithFaculty = {
-      ...course,
-      faculty: assignedFaculty,
-      role: assignedRole,
-      isLab: isLab || course.category === 'Lab' || (course.category === 'Lab Integrated Theory' && isLab)
-    };
-
-    const constraintCheck = checkConstraints(day, slot, courseWithFaculty, batch);
-
-    if (constraintCheck.valid) {
-      // Check for faculty collisions before assigning
-      const collisions = checkFacultyCollision(day, slot, assignedFaculty, batch);
-
-      if (collisions && collisions.length > 0) {
-        // Show collision confirmation modal
-        setCollisionData({
-          day,
-          slot,
-          batch,
-          course: courseWithFaculty,
-          facultyName: assignedFaculty,
-          collisions: collisions
-        });
-        setShowCollisionModal(true);
-        return; // Don't proceed until user confirms
+      if (isLab) {
+        // For lab sessions, look for Lab Incharge
+        const labResult = findFacultyForCourse(course, batch, selectedSemester, 'Lab Incharge');
+        if (labResult.faculty !== 'Unassigned') {
+          assignedFaculty = labResult.faculty;
+          assignedRole = 'Lab Incharge';
+          console.log(`PG Lab assignment: ${assignedFaculty} for role: ${assignedRole} (${labResult.matchType})`);
+        }
+      } else {
+        // For theory sessions, look for Theory Teacher
+        const theoryResult = findFacultyForCourse(course, batch, selectedSemester, 'Theory Teacher');
+        if (theoryResult.faculty !== 'Unassigned') {
+          assignedFaculty = theoryResult.faculty;
+          assignedRole = 'Theory Teacher';
+          console.log(`PG Theory assignment: ${assignedFaculty} for role: ${assignedRole} (${theoryResult.matchType})`);
+        }
       }
 
-      // No collisions, proceed with assignment
-      proceedWithCourseAssignment(day, slot, batch, courseWithFaculty, assignedFaculty);
+      // Create course object with assigned faculty
+      const courseWithFaculty = {
+        ...course,
+        faculty: assignedFaculty,
+        role: assignedRole,
+        isLab: isLab || course.category === 'Lab' || (course.category === 'Lab Integrated Theory' && isLab)
+      };
+
+      const constraintCheck = checkConstraints(day, slot, courseWithFaculty, batch);
+
+      if (constraintCheck.valid) {
+        // Check for faculty collisions before assigning
+        const collisions = checkFacultyCollision(day, slot, assignedFaculty, batch);
+
+        if (collisions && collisions.length > 0) {
+          // Show collision confirmation modal
+          setCollisionData({
+            day,
+            slot,
+            batch,
+            course: courseWithFaculty,
+            facultyName: assignedFaculty,
+            collisions: collisions
+          });
+          setShowCollisionModal(true);
+          return; // Don't proceed until user confirms
+        }
+
+        // No collisions, proceed with assignment
+        proceedWithCourseAssignment(day, slot, batch, courseWithFaculty, assignedFaculty);
+      } else {
+        alert(constraintCheck.message);
+      }
     } else {
-      alert(constraintCheck.message);
+      // For UG courses, use the existing logic
+      // Find faculty for the first available role
+      let assignedFaculty = 'Unassigned';
+      let assignedRole = requiredRoles[0];
+
+      for (const role of requiredRoles) {
+        const result = findFacultyForCourse(course, batch, selectedSemester, role);
+        if (result.faculty !== 'Unassigned') {
+          assignedFaculty = result.faculty;
+          assignedRole = role;
+          console.log(`Manual assignment: ${assignedFaculty} for role: ${assignedRole} (${result.matchType})`);
+          break;
+        }
+      }
+
+      // Create course object with assigned faculty
+      const courseWithFaculty = {
+        ...course,
+        faculty: assignedFaculty,
+        role: assignedRole,
+        isLab: isLab || course.category === 'Lab' || (course.category === 'Lab Integrated Theory' && isLab)
+      };
+
+      const constraintCheck = checkConstraints(day, slot, courseWithFaculty, batch);
+
+      if (constraintCheck.valid) {
+        // Check for faculty collisions before assigning
+        const collisions = checkFacultyCollision(day, slot, assignedFaculty, batch);
+
+        if (collisions && collisions.length > 0) {
+          // Show collision confirmation modal
+          setCollisionData({
+            day,
+            slot,
+            batch,
+            course: courseWithFaculty,
+            facultyName: assignedFaculty,
+            collisions: collisions
+          });
+          setShowCollisionModal(true);
+          return; // Don't proceed until user confirms
+        }
+
+        // No collisions, proceed with assignment
+        proceedWithCourseAssignment(day, slot, batch, courseWithFaculty, assignedFaculty);
+      } else {
+        alert(constraintCheck.message);
+      }
     }
 
     setIsEdited(true);
@@ -1049,8 +1307,6 @@ const TimetableBuilder = () => {
         return;
       }
 
-      // Note: Lab scheduling will be done after timetable creation to avoid collisions
-
       // Helper constants
       const allDays = [...DAYS];
       const allSlots = [...TIME_SLOTS];
@@ -1079,9 +1335,59 @@ const TimetableBuilder = () => {
       const normRole = r => (r || '').replace(/\s+/g, ' ').trim();
       const normBatchKey = b => normalizeBatch((b || '').replace(/\s+/g, ' ').trim());
 
-      // Helper: get faculty for course/batch/semester/role
+      // Enhanced faculty assignment function for PG courses
+      const getFacultyForPG = (course, batch, semester, role) => {
+        // For PG courses, we need to handle separate theory and lab faculty assignments
+
+        // First try exact match (including empty batch for PG)
+        const exactMatch = facultyData.find(fa =>
+          (norm(fa.courseCode) === norm(course.code) || norm(fa.courseName) === norm(course.name)) &&
+          (normBatchKey(fa.batch) === normBatchKey(batch) || fa.batch === '' || fa.batch === '-' || fa.batch === undefined) &&
+          String(fa.semester) === String(semester) &&
+          normRole(fa.role) === normRole(role)
+        );
+
+        if (exactMatch) {
+          console.log(`[INFO] Found faculty for ${course.code}: ${exactMatch.facultyName} (${role})`);
+          return exactMatch.facultyName;
+        }
+
+        // If no exact match, try more flexible matching for PG courses (ignore batch)
+        const flexibleMatch = facultyData.find(fa =>
+          (norm(fa.courseCode) === norm(course.code) || norm(fa.courseName) === norm(course.name)) &&
+          String(fa.semester) === String(semester) &&
+          normRole(fa.role) === normRole(role) &&
+          (fa.courseType === 'PG' || fa.courseType === undefined)
+        );
+
+        if (flexibleMatch) {
+          console.log(`[INFO] Found faculty for ${course.code}: ${flexibleMatch.facultyName} (${role})`);
+          return flexibleMatch.facultyName;
+        }
+
+        // If still no match, try any match for the course and role (ignore semester and batch)
+        const anyMatch = facultyData.find(fa =>
+          (norm(fa.courseCode) === norm(course.code) || norm(fa.courseName) === norm(course.name)) &&
+          normRole(fa.role) === normRole(role)
+        );
+
+        if (anyMatch) {
+          console.log(`[INFO] Found faculty for ${course.code}: ${anyMatch.facultyName} (${role})`);
+          return anyMatch.facultyName;
+        }
+
+        console.log(`[WARN] No faculty found for ${course.code} (${course.name}) - ${role}`);
+        return null;
+      };
+
+      // Helper: get faculty for course/batch/semester/role (compatible with both UG and PG)
       const getFaculty = (course, batch, semester, role = null) => {
-        // For Lab Integrated Theory, allow both Lab Incharge and Theory Teacher based on the role parameter
+        // For PG courses, use the enhanced faculty assignment
+        if (studentType === 'PG') {
+          return getFacultyForPG(course, batch, semester, role);
+        }
+
+        // For UG courses, use the existing logic
         if (course.category === 'Lab Integrated Theory') {
           const match = facultyData.find(fa =>
             (norm(fa.courseCode) === norm(course.code) || norm(fa.courseName) === norm(course.name)) &&
@@ -1100,27 +1406,32 @@ const TimetableBuilder = () => {
         );
         return match ? match.facultyName : null;
       };
+
       // Helper: is faculty free at day/slot (across all batches and all semesters)
       const isFacultyAvailable = (faculty, day, slot) => {
         if (!facultySchedule[faculty]) return true;
         return !facultySchedule[faculty][day]?.has(slot);
       };
+
       // Assign slot to faculty
       const assignFacultySlot = (faculty, day, slot) => {
         if (!facultySchedule[faculty]) facultySchedule[faculty] = {};
         if (!facultySchedule[faculty][day]) facultySchedule[faculty][day] = new Set();
         facultySchedule[faculty][day].add(slot);
       };
+
       // Count first-hour assignments
       const facultyFirstHourCount = (faculty) => {
         if (!facultySchedule[faculty]) return 0;
         return Object.keys(facultySchedule[faculty]).filter(day => facultySchedule[faculty][day].has(allSlots[0])).length;
       };
+
       // Count free days
       const facultyFreeDays = (faculty) => {
         if (!facultySchedule[faculty]) return allDays.length;
         return allDays.filter(day => !facultySchedule[faculty][day] || facultySchedule[faculty][day].size === 0).length;
       };
+
       // Count theory/lab on a day
       const facultyDayTypeCount = (faculty, day, typeMap) => {
         if (!facultySchedule[faculty] || !facultySchedule[faculty][day]) return { theory: 0, lab: 0 };
@@ -1131,8 +1442,19 @@ const TimetableBuilder = () => {
         }
         return { theory, lab };
       };
+
       // Helper: log unscheduled
       const unscheduled = [];
+
+      // Debug: Log available faculty data for this semester and student type
+      if (studentType === 'PG') {
+        const pgFacultyData = facultyData.filter(fa =>
+          String(fa.semester) === String(selectedSemester) &&
+          (fa.courseType === 'PG' || fa.courseType === undefined)
+        );
+        console.log(`[INFO] PG faculty data for semester ${selectedSemester}: ${pgFacultyData.length} assignments`);
+      }
+
       // Try to assign a session
       const tryAssign = (course, batch, type, hours, mustBeConsecutive = false, preferFirstHour = false) => {
         let assigned = 0;
@@ -1252,11 +1574,13 @@ const TimetableBuilder = () => {
         }
         return assigned;
       };
+
       // --- MAIN SCHEDULING LOOP ---
       for (const course of semesterCourses) {
         for (const batch of normBatches) {
           // --- STRICT WEEKLY HOUR MAPPING ---
           let theoryHours = 0, labHours = 0, mustBeConsecutive = false, labBlockSize = 2;
+
           if (course.category === 'Theory') {
             theoryHours = Number(course.credits);
             mustBeConsecutive = false;
@@ -1275,76 +1599,163 @@ const TimetableBuilder = () => {
               theoryHours = 3; labHours = 4; mustBeConsecutive = false; labBlockSize = 4;
             }
           }
-          // Assign theory hours (brute-force, no maxAttempts)
-          if (theoryHours > 0) {
-            let assigned = 0;
-            const faculty = getFaculty(course, batch, selectedSemester, 'Theory Teacher');
-            for (let h = 0; h < theoryHours; h++) {
-              let found = false;
-              for (const day of DAYS) {
-                // Count already scheduled theory hours for this course/batch on this day
-                const theoryCount = TIME_SLOTS.filter(slot => {
-                  const scheduled = newTimetable[day][slot][batch];
-                  return scheduled && scheduled.code === course.code && !scheduled.isLab;
-                }).length;
-                if (theoryCount >= 2) continue; // Enforce max 2 theory hours per day for this course/batch
-                for (const slot of TIME_SLOTS) {
-                  // Check if slot is free for this batch
-                  if (newTimetable[day][slot][batch]) {
-                    console.log(`[SKIP] Slot ${day} ${slot} already filled for batch ${batch}`);
-                    continue;
-                  }
-                  // Check if faculty is teaching any batch at this slot
-                  let facultyBusy = false;
-                  for (const b of normBatches) {
-                    if (newTimetable[day][slot][b] && newTimetable[day][slot][b]?.faculty === faculty) {
-                      facultyBusy = true;
+
+          // For PG courses, handle theory and lab sessions separately with different faculty
+          if (studentType === 'PG') {
+            // Assign theory hours for PG courses
+            if (theoryHours > 0) {
+              let assigned = 0;
+              const theoryFaculty = getFaculty(course, batch, selectedSemester, 'Theory Teacher');
+              if (!theoryFaculty) {
+                unscheduled.push({ course: course.code, semester: selectedSemester, faculty: 'Unassigned', reason: 'No theory faculty mapped', batch });
+                console.warn(`[UNSCHEDULED] No theory faculty mapped for ${course.code} (${course.name}), batch ${batch}`);
+              } else {
+                for (let h = 0; h < theoryHours; h++) {
+                  let found = false;
+                  for (const day of DAYS) {
+                    // Count already scheduled theory hours for this course/batch on this day
+                    const theoryCount = TIME_SLOTS.filter(slot => {
+                      const scheduled = newTimetable[day][slot][batch];
+                      return scheduled && scheduled.code === course.code && !scheduled.isLab;
+                    }).length;
+                    if (theoryCount >= 2) continue; // Enforce max 2 theory hours per day for this course/batch
+                    for (const slot of TIME_SLOTS) {
+                      // Check if slot is free for this batch
+                      if (newTimetable[day][slot][batch]) {
+                        console.log(`[SKIP] Slot ${day} ${slot} already filled for batch ${batch}`);
+                        continue;
+                      }
+                      // Check if faculty is teaching any batch at this slot
+                      let facultyBusy = false;
+                      for (const b of normBatches) {
+                        if (newTimetable[day][slot][b] && newTimetable[day][slot][b]?.faculty === theoryFaculty) {
+                          facultyBusy = true;
+                          break;
+                        }
+                      }
+                      if (facultyBusy) {
+                        console.log(`[SKIP] ${theoryFaculty} busy at ${day} ${slot} for another batch`);
+                        continue;
+                      }
+                      // Assign theory session
+                      newTimetable[day][slot][batch] = { ...course, faculty: theoryFaculty, isLab: false };
+                      typeMap[day][slot] = 'theory';
+                      assignFacultySlot(theoryFaculty, day, slot);
+                      assigned++;
+                      found = true;
                       break;
                     }
+                    if (found) break;
                   }
-                  if (facultyBusy) {
-                    console.log(`[SKIP] ${faculty} busy at ${day} ${slot} for another batch`);
-                    continue;
+                  if (!found) {
+                    unscheduled.push({ course: course.code, semester: selectedSemester, faculty: theoryFaculty, reason: `Could not assign a theory hour`, batch });
+                    console.warn(`[UNSCHEDULED] Could not assign a theory hour for ${course.code} (${course.name}), batch ${batch}`);
                   }
-                  // Assign
-                  newTimetable[day][slot][batch] = { ...course, faculty, isLab: false };
-                  typeMap[day][slot] = 'theory';
-                  assignFacultySlot(faculty, day, slot);
-                  assigned++;
-                  found = true;
-                  break;
                 }
-                if (found) break;
+                if (assigned < theoryHours) {
+                  unscheduled.push({ course: course.code, semester: selectedSemester, faculty: theoryFaculty, reason: `Could not assign all theory hours (assigned ${assigned}/${theoryHours})`, batch });
+                  console.warn(`[UNSCHEDULED] Theory: ${course.code} (${course.name}), batch ${batch}, assigned ${assigned}/${theoryHours}`);
+                }
               }
-              if (!found) {
-                unscheduled.push({ course: course.code, semester: selectedSemester, faculty, reason: `Could not assign a theory hour`, batch });
-                console.warn(`[UNSCHEDULED] Could not assign a theory hour for ${course.code} (${course.name}), batch ${batch}`);
+            }
+
+            // Assign lab hours for PG courses
+            if (labHours > 0) {
+              let assigned = 0;
+              const labFaculty = getFaculty(course, batch, selectedSemester, 'Lab Incharge');
+              if (!labFaculty) {
+                unscheduled.push({ course: course.code, semester: selectedSemester, faculty: 'Unassigned', reason: 'No lab faculty mapped', batch });
+                console.warn(`[UNSCHEDULED] No lab faculty mapped for ${course.code} (${course.name}), batch ${batch}`);
+              } else {
+                let attempts = 0;
+                const maxAttempts = 2 * allDays.length * allSlots.length;
+                while (assigned < labHours && attempts < maxAttempts) {
+                  const before = assigned;
+                  const block = Math.min(labBlockSize, labHours - assigned);
+                  assigned += tryAssign(course, batch, 'lab', block, true, false);
+                  if (assigned === before) attempts++;
+                  else attempts = 0;
+                }
+                if (assigned < labHours) {
+                  unscheduled.push({ course: course.code, semester: selectedSemester, faculty: labFaculty, reason: `Could not assign all lab hours (assigned ${assigned}/${labHours})`, batch });
+                  console.warn(`[UNSCHEDULED] Lab: ${course.code} (${course.name}), batch ${batch}, assigned ${assigned}/${labHours}`);
+                }
               }
             }
-            if (assigned < theoryHours) {
-              unscheduled.push({ course: course.code, semester: selectedSemester, faculty, reason: `Could not assign all theory hours (assigned ${assigned}/${theoryHours})`, batch });
-              console.warn(`[UNSCHEDULED] Theory: ${course.code} (${course.name}), batch ${batch}, assigned ${assigned}/${theoryHours}`);
+          } else {
+            // For UG courses, use the existing logic
+            // Assign theory hours (brute-force, no maxAttempts)
+            if (theoryHours > 0) {
+              let assigned = 0;
+              const faculty = getFaculty(course, batch, selectedSemester, 'Theory Teacher');
+              for (let h = 0; h < theoryHours; h++) {
+                let found = false;
+                for (const day of DAYS) {
+                  // Count already scheduled theory hours for this course/batch on this day
+                  const theoryCount = TIME_SLOTS.filter(slot => {
+                    const scheduled = newTimetable[day][slot][batch];
+                    return scheduled && scheduled.code === course.code && !scheduled.isLab;
+                  }).length;
+                  if (theoryCount >= 2) continue; // Enforce max 2 theory hours per day for this course/batch
+                  for (const slot of TIME_SLOTS) {
+                    // Check if slot is free for this batch
+                    if (newTimetable[day][slot][batch]) {
+                      console.log(`[SKIP] Slot ${day} ${slot} already filled for batch ${batch}`);
+                      continue;
+                    }
+                    // Check if faculty is teaching any batch at this slot
+                    let facultyBusy = false;
+                    for (const b of normBatches) {
+                      if (newTimetable[day][slot][b] && newTimetable[day][slot][b]?.faculty === faculty) {
+                        facultyBusy = true;
+                        break;
+                      }
+                    }
+                    if (facultyBusy) {
+                      console.log(`[SKIP] ${faculty} busy at ${day} ${slot} for another batch`);
+                      continue;
+                    }
+                    // Assign
+                    newTimetable[day][slot][batch] = { ...course, faculty, isLab: false };
+                    typeMap[day][slot] = 'theory';
+                    assignFacultySlot(faculty, day, slot);
+                    assigned++;
+                    found = true;
+                    break;
+                  }
+                  if (found) break;
+                }
+                if (!found) {
+                  unscheduled.push({ course: course.code, semester: selectedSemester, faculty, reason: `Could not assign a theory hour`, batch });
+                  console.warn(`[UNSCHEDULED] Could not assign a theory hour for ${course.code} (${course.name}), batch ${batch}`);
+                }
+              }
+              if (assigned < theoryHours) {
+                unscheduled.push({ course: course.code, semester: selectedSemester, faculty, reason: `Could not assign all theory hours (assigned ${assigned}/${theoryHours})`, batch });
+                console.warn(`[UNSCHEDULED] Theory: ${course.code} (${course.name}), batch ${batch}, assigned ${assigned}/${theoryHours}`);
+              }
             }
-          }
-          // Assign lab hours (consecutive blocks)
-          if (labHours > 0) {
-            let assigned = 0;
-            let attempts = 0;
-            const maxAttempts = 2 * allDays.length * allSlots.length;
-            while (assigned < labHours && attempts < maxAttempts) {
-              const before = assigned;
-              const block = Math.min(labBlockSize, labHours - assigned);
-              assigned += tryAssign(course, batch, 'lab', block, true, false);
-              if (assigned === before) attempts++;
-              else attempts = 0;
-            }
-            if (assigned < labHours) {
-              unscheduled.push({ course: course.code, semester: selectedSemester, faculty: getFaculty(course, batch, selectedSemester, 'Lab Incharge'), reason: `Could not assign all lab hours (assigned ${assigned}/${labHours})`, batch });
-              console.warn(`[UNSCHEDULED] Lab: ${course.code} (${course.name}), batch ${batch}, assigned ${assigned}/${labHours}`);
+            // Assign lab hours (consecutive blocks)
+            if (labHours > 0) {
+              let assigned = 0;
+              let attempts = 0;
+              const maxAttempts = 2 * allDays.length * allSlots.length;
+              while (assigned < labHours && attempts < maxAttempts) {
+                const before = assigned;
+                const block = Math.min(labBlockSize, labHours - assigned);
+                assigned += tryAssign(course, batch, 'lab', block, true, false);
+                if (assigned === before) attempts++;
+                else attempts = 0;
+              }
+              if (assigned < labHours) {
+                unscheduled.push({ course: course.code, semester: selectedSemester, faculty: getFaculty(course, batch, selectedSemester, 'Lab Incharge'), reason: `Could not assign all lab hours (assigned ${assigned}/${labHours})`, batch });
+                console.warn(`[UNSCHEDULED] Lab: ${course.code} (${course.name}), batch ${batch}, assigned ${assigned}/${labHours}`);
+              }
             }
           }
         }
       }
+
       // 3. Check free day for each faculty
       for (const faculty of Object.keys(facultySchedule)) {
         if (facultyFreeDays(faculty) < 1) {
@@ -1352,6 +1763,7 @@ const TimetableBuilder = () => {
           console.warn(`[UNSCHEDULED] Faculty ${faculty} has no free day`);
         }
       }
+
       // 4. Ensure no batch has a completely free day (student constraint)
       for (const batch of normBatches) {
         for (const day of allDays) {
@@ -1404,9 +1816,15 @@ const TimetableBuilder = () => {
                     }
                     if (facultyConflict) continue;
                     if (facultySchedule[entry.faculty]?.[day]?.has(slot)) continue;
-                    newTimetable[day][slot][batch] = { name: entry.course, faculty: entry.faculty, code: entry.course, isLab: false, category: 'Theory' };
+                    // Create a placeholder course for this unscheduled entry
+                    const placeholderCourse = {
+                      code: entry.course,
+                      name: entry.course,
+                      faculty: entry.faculty,
+                      isLab: false
+                    };
+                    newTimetable[day][slot][batch] = placeholderCourse;
                     assignFacultySlot(entry.faculty, day, slot);
-                    unscheduled.splice(i, 1);
                     filled = true;
                     break;
                   }
@@ -1414,27 +1832,36 @@ const TimetableBuilder = () => {
                 }
               }
             }
-            if (!filled) {
-              unscheduled.push({ course: '-', semester: selectedSemester, faculty: '-', reason: `Batch ${batch} has a free day (${day})` });
-              console.warn(`[UNSCHEDULED] Batch ${batch} has a free day (${day})`);
-            }
           }
         }
       }
-      // 4. Show preview and unscheduled summary
+
+      // 5. Show preview and unscheduled summary
       setPreviewTimetable(newTimetable);
       setDisplayBatch(batches[0]);
       setScheduleSuccess(true);
 
-      // 5. Schedule lab floors based on the created timetable
+      // 6. Schedule lab floors based on the created timetable
       scheduleLabsForTimetable(newTimetable);
 
+      // 6.5. Also populate lab schedule from the generated timetable to ensure lab previewer is updated
+      populateLabScheduleFromTimetable(newTimetable);
+
+      // 7. Show results
       if (unscheduled.length > 0) {
         toast.warn(`Partial schedule: ${unscheduled.length} unscheduled entries. See console for details.`);
         console.warn('Unscheduled entries:', unscheduled);
       } else {
         toast.success('Preview of auto-scheduled timetable generated!');
       }
+
+      // 8. Log summary
+      console.log(`[AUTO-SCHEDULE] Generated timetable for semester ${selectedSemester} (${studentType})`);
+      console.log(`[AUTO-SCHEDULE] Total unscheduled: ${unscheduled.length}`);
+      if (unscheduled.length > 0) {
+        console.log('[AUTO-SCHEDULE] Unscheduled entries:', unscheduled);
+      }
+
     } catch (error) {
       setPreviewTimetable(null);
       console.error('Auto-schedule error:', error);
@@ -1544,8 +1971,17 @@ const TimetableBuilder = () => {
           const course = timetableData[day][slot][batch] || timetableData[day][slot][normBatch];
 
           // Only populate lab schedule for actual lab periods (not theory periods)
-          if (course && (course.isLab || course.category === 'Lab' ||
-            (course.category === 'Lab Integrated Theory' && course.isLab))) {
+          // Check if this is a lab session based on multiple criteria
+          const isLabSession = course && (
+            course.isLab === true ||
+            course.category === 'Lab' ||
+            (course.category === 'Lab Integrated Theory' && course.isLab === true) ||
+            (course.type === 'lab') ||
+            (course.sessionType === 'lab')
+          );
+
+          if (isLabSession) {
+            console.log(`[LAB] Found lab session: ${course.code} (${course.name}) - ${course.isLab} - ${course.category} - ${course.type}`);
             const floor = getLabFloorForBatch(batch);
             const labAssignment = {
               batch,
@@ -1562,6 +1998,8 @@ const TimetableBuilder = () => {
             if (!newAllSemesterLabSchedule[floor]) newAllSemesterLabSchedule[floor] = {};
             if (!newAllSemesterLabSchedule[floor][day]) newAllSemesterLabSchedule[floor][day] = {};
             newAllSemesterLabSchedule[floor][day][slot] = labAssignment;
+
+            console.log(`[LAB] Added to lab schedule: ${floor} Floor - ${day} - ${slot} - ${batch}`);
           }
         });
       });
@@ -1928,15 +2366,15 @@ const TimetableBuilder = () => {
         // Find all lab assistants for this course, batch, semester
         const labAssistants = facultyData
           ? facultyData.filter(fa => {
-              const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-              const normBatchKey = b => normalizeBatch((b || '').replace(/\s+/g, ' ').trim());
-              return (
-                (norm(fa.courseCode) === norm(c.code) || norm(fa.courseName) === norm(c.name)) &&
-                normBatchKey(fa.batch) === normBatch &&
-                String(fa.semester) === String(selectedSemester) &&
-                fa.role === 'Lab Assistant'
-              );
-            })
+            const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            const normBatchKey = b => normalizeBatch((b || '').replace(/\s+/g, ' ').trim());
+            return (
+              (norm(fa.courseCode) === norm(c.code) || norm(fa.courseName) === norm(c.name)) &&
+              normBatchKey(fa.batch) === normBatch &&
+              String(fa.semester) === String(selectedSemester) &&
+              fa.role === 'Lab Assistant'
+            );
+          })
           : [];
         if (labAssistants.length > 0) {
           facultyNames = [...facultyNames, ...labAssistants.map(fa => fa.facultyName)];
@@ -2221,15 +2659,15 @@ const TimetableBuilder = () => {
         // Find all lab assistants for this course, batch, semester
         const labAssistants = facultyData
           ? facultyData.filter(fa => {
-              const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-              const normBatchKey = b => normalizeBatch((b || '').replace(/\s+/g, ' ').trim());
-              return (
-                (norm(fa.courseCode) === norm(c.code) || norm(fa.courseName) === norm(c.name)) &&
-                normBatchKey(fa.batch) === normBatch &&
-                String(fa.semester) === String(selectedSemester) &&
-                fa.role === 'Lab Assistant'
-              );
-            })
+            const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            const normBatchKey = b => normalizeBatch((b || '').replace(/\s+/g, ' ').trim());
+            return (
+              (norm(fa.courseCode) === norm(c.code) || norm(fa.courseName) === norm(c.name)) &&
+              normBatchKey(fa.batch) === normBatch &&
+              String(fa.semester) === String(selectedSemester) &&
+              fa.role === 'Lab Assistant'
+            );
+          })
           : [];
         if (labAssistants.length > 0) {
           facultyNames = [...facultyNames, ...labAssistants.map(fa => fa.facultyName)];
@@ -2565,6 +3003,64 @@ const TimetableBuilder = () => {
     const searchSemester = String(semester).trim();
     const searchRole = role?.trim();
 
+    // For PG courses, we need to handle separate theory and lab faculty assignments
+    if (studentType === 'PG') {
+      // Look for exact match with role-specific assignment (including empty batch for PG)
+      const batchMatch = facultyData.find(assignment =>
+        ((assignment.courseCode?.trim() === searchCourseCode) || (assignment.courseName?.trim() === searchCourseName)) &&
+        (assignment.batch?.trim() === searchBatch || assignment.batch === '' || assignment.batch === '-' || assignment.batch === undefined) &&
+        String(assignment.semester).trim() === searchSemester &&
+        assignment.role?.trim() === searchRole
+      );
+
+      if (batchMatch) {
+        return {
+          faculty: batchMatch.facultyName,
+          matchType: 'PG batch-specific match',
+          details: `Course: ${batchMatch.courseCode || batchMatch.courseName}, Batch: ${batchMatch.batch}, Semester: ${batchMatch.semester}, Role: ${batchMatch.role}`
+        };
+      }
+
+      // For PG courses, also check for courseType filter (including empty batch)
+      const pgBatchMatch = facultyData.find(assignment =>
+        ((assignment.courseCode?.trim() === searchCourseCode) || (assignment.courseName?.trim() === searchCourseName)) &&
+        (assignment.batch?.trim() === searchBatch || assignment.batch === '' || assignment.batch === '-' || assignment.batch === undefined) &&
+        String(assignment.semester).trim() === searchSemester &&
+        assignment.role?.trim() === searchRole &&
+        assignment.courseType?.trim() === 'PG'
+      );
+
+      if (pgBatchMatch) {
+        return {
+          faculty: pgBatchMatch.facultyName,
+          matchType: 'PG courseType-specific match',
+          details: `Course: ${pgBatchMatch.courseCode || pgBatchMatch.courseName}, Batch: ${pgBatchMatch.batch}, Semester: ${pgBatchMatch.semester}, Role: ${pgBatchMatch.role}, Type: ${pgBatchMatch.courseType}`
+        };
+      }
+
+      // Try more flexible matching for PG courses (ignore batch)
+      const flexibleMatch = facultyData.find(assignment =>
+        ((assignment.courseCode?.trim() === searchCourseCode) || (assignment.courseName?.trim() === searchCourseName)) &&
+        String(assignment.semester).trim() === searchSemester &&
+        assignment.role?.trim() === searchRole
+      );
+
+      if (flexibleMatch) {
+        return {
+          faculty: flexibleMatch.facultyName,
+          matchType: 'PG flexible match',
+          details: `Course: ${flexibleMatch.courseCode || flexibleMatch.courseName}, Batch: ${flexibleMatch.batch}, Semester: ${flexibleMatch.semester}, Role: ${flexibleMatch.role}`
+        };
+      }
+
+      return {
+        faculty: 'Unassigned',
+        matchType: 'No PG batch-specific match',
+        details: `Searched for: Course=${searchCourseCode}/${searchCourseName}, Batch=${searchBatch}, Semester=${searchSemester}, Role=${searchRole}, Type=PG`
+      };
+    }
+
+    // For UG courses, use the existing logic
     // Only allow assignment if there is an explicit batch match (course code/name + batch + semester + role)
     const batchMatch = facultyData.find(assignment =>
       ((assignment.courseCode?.trim() === searchCourseCode) || (assignment.courseName?.trim() === searchCourseName)) &&
@@ -2798,6 +3294,15 @@ const TimetableBuilder = () => {
             </div>
             <div className="h-8 w-px bg-gray-600"></div>
             <div className="flex space-x-2">
+              <Link
+                to="/guide-me"
+                className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all duration-200 font-medium"
+              >
+                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Guide Me
+              </Link>
               <select
                 value={selectedSemester}
                 onChange={(e) => handleSemesterChange(e.target.value)}
@@ -3443,6 +3948,16 @@ const TimetableBuilder = () => {
               <div className="text-sm text-gray-300 bg-gray-700/50 px-3 py-2 rounded-lg">
                 💡 Click on empty slots to assign lab courses
               </div>
+              <div className="flex items-center space-x-4 text-xs">
+                <div className="flex items-center space-x-2">
+                  <div className="w-3 h-3 bg-green-500/20 border border-green-500/30"></div>
+                  <span className="text-green-300">PG</span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <div className="w-3 h-3 bg-orange-500/20 border border-orange-500/30"></div>
+                  <span className="text-orange-300">UG</span>
+                </div>
+              </div>
               {selectedSlot?.isLabSlot && (
                 <div className="text-sm text-blue-300 bg-blue-500/20 px-3 py-2 rounded-lg border border-blue-500/30">
                   🎯 Lab slot selected: {selectedSlot.day} - {selectedSlot.slot} - {selectedSlot.floor} Floor
@@ -3499,7 +4014,6 @@ const TimetableBuilder = () => {
                         </div>
                       </th>
                     ))}
-                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-300 uppercase tracking-wider border-b-2 border-gray-400">Lab Floor</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3509,8 +4023,9 @@ const TimetableBuilder = () => {
                         {day}
                       </td>
                       {TIME_SLOTS.map((slot, slotIdx) => {
-                        const labAssignment = getAllSemesterLabScheduleForFloor(selectedLabFloor)[day]?.[slot];
+                        const labAssignment = getAllLabSessionsForFloor(selectedLabFloor)[day]?.[slot];
                         const isCurrentSemester = labAssignment?.semester === selectedSemester;
+                        const isCurrentStudentType = labAssignment?.studentType === studentType;
                         const isSelected = selectedSlot?.day === day && selectedSlot?.slot === slot && selectedSlot?.floor === selectedLabFloor;
 
                         return (
@@ -3519,7 +4034,7 @@ const TimetableBuilder = () => {
                             className={`align-middle text-center px-2 py-3 border-r border-gray-700 ${isSelected
                               ? 'ring-2 ring-blue-500 bg-blue-900/30'
                               : labAssignment
-                                ? isCurrentSemester
+                                ? labAssignment.studentType === 'PG'
                                   ? 'bg-green-500/20 hover:bg-green-500/30 cursor-pointer'
                                   : 'bg-orange-500/20 hover:bg-orange-500/30 cursor-pointer'
                                 : 'bg-gray-700/50 hover:bg-gray-700/70 cursor-pointer'
@@ -3537,8 +4052,12 @@ const TimetableBuilder = () => {
                                 <div className="text-xs font-bold">
                                   {labAssignment.course.category === 'Lab' ? 'Lab' : 'Lab Integrated'}
                                 </div>
+                                <div className={`text-xs font-bold mt-1 ${labAssignment.studentType === 'PG' ? 'text-green-300' : 'text-orange-300'
+                                  }`}>
+                                  {labAssignment.studentType} (Sem {labAssignment.semester})
+                                </div>
                                 {!isCurrentSemester && (
-                                  <div className="text-xs text-orange-300 font-bold mt-1">
+                                  <div className="text-xs text-gray-300 font-bold mt-1">
                                     Other Semester
                                   </div>
                                 )}
@@ -3560,27 +4079,6 @@ const TimetableBuilder = () => {
                           </td>
                         );
                       })}
-                      <td className="bg-gray-800 text-white font-bold px-4 py-2 border-r border-gray-700 text-center">
-                        {(() => {
-                          // Find lab floor for this day's lab courses
-                          const labCourses = TIME_SLOTS.map(slot => {
-                            const normBatch = normalizeBatch(editingBatch);
-                            const course = timetables[selectedSemester]?.[day]?.[slot]?.[editingBatch] || timetables[selectedSemester]?.[day]?.[slot]?.[normBatch];
-                            return course && (course.isLab || course.category === 'Lab' ||
-                              (course.category === 'Lab Integrated Theory' && course.isLab)) ? course : null;
-                          }).filter(Boolean);
-
-                          if (labCourses.length > 0) {
-                            const floor = getLabFloorForBatch(editingBatch);
-                            return (
-                              <div className="text-xs font-bold text-purple-300">
-                                {floor} Floor
-                              </div>
-                            );
-                          }
-                          return <div className="text-gray-400 text-xs">-</div>;
-                        })()}
-                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -3591,10 +4089,12 @@ const TimetableBuilder = () => {
           {/* Lab Schedule Summary */}
           <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-4">
             {LAB_FLOORS.map(floor => {
-              const floorSchedule = getAllSemesterLabScheduleForFloor(floor);
+              const floorSchedule = getAllLabSessionsForFloor(floor);
               const totalSlots = DAYS.length * TIME_SLOTS.length;
               let occupiedSlots = 0;
               let currentSemesterSlots = 0;
+              let ugSlots = 0;
+              let pgSlots = 0;
 
               // Get preferred batches for this floor
               const preferredBatches = Object.entries(BATCH_FLOOR_PREFERENCE)
@@ -3607,6 +4107,11 @@ const TimetableBuilder = () => {
                     occupiedSlots++;
                     if (floorSchedule[day][slot].semester === selectedSemester) {
                       currentSemesterSlots++;
+                      if (floorSchedule[day][slot].studentType === 'UG') {
+                        ugSlots++;
+                      } else if (floorSchedule[day][slot].studentType === 'PG') {
+                        pgSlots++;
+                      }
                     }
                   }
                 });
@@ -3636,6 +4141,18 @@ const TimetableBuilder = () => {
                       <span className="text-gray-300">Current Semester:</span>
                       <span className="text-green-400">{currentSemesterSlots}</span>
                     </div>
+                    {currentSemesterSlots > 0 && (
+                      <>
+                        <div className="flex justify-between">
+                          <span className="text-gray-300">UG Slots:</span>
+                          <span className="text-blue-400">{ugSlots}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-300">PG Slots:</span>
+                          <span className="text-purple-400">{pgSlots}</span>
+                        </div>
+                      </>
+                    )}
                     <div className="flex justify-between">
                       <span className="text-gray-300">Utilization:</span>
                       <span className={`font-bold ${utilization > 80 ? 'text-red-400' : utilization > 60 ? 'text-yellow-400' : 'text-green-400'}`}>
