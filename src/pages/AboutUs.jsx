@@ -1,13 +1,14 @@
 import React from 'react';
 import yImg from '../assets/y.jpg';
 import aImg from '../assets/a.jpg';
+import rImg from '../assets/r.jpg';
 
- // Use the provided image or a similar placeholder
+// Use the provided image or a similar placeholder
 const bImg = 'https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_1280.png';
 const team = [
   { name: 'Yazhvendhan K M', qualification: '3rd year CSE', img: yImg, role: 'Team Leader' },
   { name: 'Aadhisesha D', qualification: '3rd year CSE', img: aImg, role: 'Team Member' },
-  { name: 'Roshan Kumar K', qualification: '3rd year CSE', img: bImg, role: 'Team Member' },
+  { name: 'Roshan Kumar K', qualification: '3rd year CSE', img: rImg, role: 'Team Member' },
   { name: 'Sheik Fazil Hussain', qualification: '3rd year CSE', img: bImg, role: 'Team Member' },
 ];
 
@@ -16,7 +17,7 @@ const AboutUs = () => (
     <div className="bg-white rounded-lg shadow-lg p-8 max-w-2xl w-full mb-8">
       <h1 className="text-3xl font-bold mb-4 text-blue-700">About Us</h1>
       <p className="text-gray-700 mb-4">
-        <strong>Timetable and Workload Management System</strong> is a comprehensive platform designed to streamline the scheduling and workload management process for academic institutions. 
+        <strong>Timetable and Workload Management System</strong> is a comprehensive platform designed to streamline the scheduling and workload management process for academic institutions.
       </p>
       <p className="text-gray-700 mb-4">
         This project is developed by a team of students and educators to improve education administration. We welcome your feedback and suggestions!
