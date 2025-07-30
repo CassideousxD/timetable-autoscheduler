@@ -2,6 +2,7 @@ import React from 'react';
 import yImg from '../assets/y.jpg';
 import aImg from '../assets/a.jpg';
 import rImg from '../assets/r.jpg';
+import fImg from '../assets/f.jpg';
 
 // Use the provided image or a similar placeholder
 const bImg = 'https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_1280.png';
@@ -9,7 +10,7 @@ const team = [
   { name: 'Yazhvendhan K M', qualification: '3rd year CSE', img: yImg, role: 'Team Leader' },
   { name: 'Aadhisesha D', qualification: '3rd year CSE', img: aImg, role: 'Team Member' },
   { name: 'Roshan Kumar K', qualification: '3rd year CSE', img: rImg, role: 'Team Member' },
-  { name: 'Sheik Fazil Hussain', qualification: '3rd year CSE', img: bImg, role: 'Team Member' },
+  { name: 'Sheik Fazil Hussain', qualification: '3rd year CSE', img: fImg, role: 'Team Member' },
 ];
 
 const AboutUs = () => (
